@@ -1,0 +1,6 @@
+# build output
+dist/
+*.exe
+*.pdb
+# local user config
+keybinds.ini
