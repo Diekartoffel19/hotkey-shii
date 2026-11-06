@@ -6,7 +6,8 @@ Tiny Windows app: press a global hotkey and instantly switch to a chosen app —
 - Record any key combo, pick the target from currently open windows
 - Optional launch path if the app is not running
 - Press again to minimize (toggle)
-- Lives in the taskbar, optional autostart with Windows
+- Optional: hide a second app while switching (gone from taskbar, keeps running; press again to bring it back)
+- Lives only in the system tray (no taskbar button), optional autostart with Windows
 - Per-user installer, no admin rights needed
 
 ## Build

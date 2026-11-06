@@ -10,7 +10,7 @@ using System.Reflection;
 static class AppInfo
 {
     public const string Name = "AppSwitch";
-    public const string Version = "1.0.0.0";
+    public const string Version = "1.1.0.0";
     public const string Publisher = "AppSwitch";
     public const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
     public const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\AppSwitch";
