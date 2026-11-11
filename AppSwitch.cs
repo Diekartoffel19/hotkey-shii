@@ -38,6 +38,7 @@ static class Native
     [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vk);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, string l);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
     [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int size);
     [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] public static extern int SetWindowTheme(IntPtr h, string app, string idList);
     public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
@@ -47,7 +48,7 @@ static class Native
     [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
     [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
 
-    public const int WM_HOTKEY = 0x0312;
+    public const int WM_HOTKEY = 0x0312, WM_CLOSE = 0x0010;
     public const uint MOD_ALT = 1, MOD_CONTROL = 2, MOD_SHIFT = 4, MOD_WIN = 8, MOD_NOREPEAT = 0x4000;
     public const int SW_HIDE = 0, SW_RESTORE = 9, SW_SHOW = 5, SW_MINIMIZE = 6;
     public const int GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80;
@@ -65,6 +66,7 @@ class Binding
     public string ExeName;     // e.g. Discord.exe
     public string LaunchPath;  // optional: start this if no window found
     public string HideExe;     // optional: hide this app's windows while switching
+    public bool CloseCurrent;  // optional: close the window that was in front when switching
     public bool Registered;
 
     public string HotkeyText { get { return Hotkeys.Format(Mods, Vk); } }
@@ -144,7 +146,7 @@ static class WinApi
         finally { Native.CloseHandle(h); }
     }
 
-    static bool IsAppWindow(IntPtr h)
+    public static bool IsAppWindow(IntPtr h)
     {
         if (!Native.IsWindowVisible(h) || Native.GetWindowTextLength(h) == 0) return false;
         if (Native.GetWindow(h, Native.GW_OWNER) != IntPtr.Zero) return false;
@@ -827,11 +829,12 @@ class BindingRow : Control
 
         int tw = Math.Max(0, right - tx);
         Ui.Text(g, Ui.NiceName(B.ExeName), Ui.Semibold, new Rectangle(tx, cy - Ui.S(20), tw, Ui.S(20)), Ui.Fg, TextFormatFlags.Bottom);
-        string sub;
-        if (B.HideExe != null) sub = "Versteckt dabei " + Ui.NiceName(B.HideExe);
-        else if (B.LaunchPath != null) sub = "Startet " + Path.GetFileName(B.LaunchPath.Trim('"'));
-        else sub = "Wechselt nur, wenn geöffnet";
-        if (B.HideExe != null && B.LaunchPath != null) sub += "  ·  startet, falls zu";
+        var subs = new List<string>();
+        if (B.HideExe != null) subs.Add("Versteckt dabei " + Ui.NiceName(B.HideExe));
+        if (B.CloseCurrent) subs.Add("Schließt aktuelles Fenster");
+        if (subs.Count == 0) subs.Add(B.LaunchPath != null ? "Startet " + Path.GetFileName(B.LaunchPath.Trim('"')) : "Wechselt nur, wenn geöffnet");
+        else if (B.LaunchPath != null) subs.Add("startet, falls zu");
+        string sub = string.Join("  ·  ", subs);
         Ui.Text(g, sub, Ui.Small, new Rectangle(tx, cy + Ui.S(2), tw, Ui.S(18)), Ui.Muted, TextFormatFlags.Top);
     }
 }
@@ -844,6 +847,7 @@ class EditDialog : Form
     readonly TextBox app = Field.MakeInput("z. B. Discord.exe");
     readonly TextBox launch = Field.MakeInput("Pfad zur .exe – leer = nur wechseln");
     readonly TextBox hide = Field.MakeInput("z. B. Spiel.exe – leer = nichts verstecken");
+    readonly ToggleSwitch closeCurrent = new ToggleSwitch("Aktuelles Fenster beim Wechseln schließen");
     readonly Label error = new Label();
     readonly string heading;
     public Binding Result;
@@ -856,7 +860,7 @@ class EditDialog : Form
         StartPosition = FormStartPosition.CenterParent; ShowInTaskbar = false; AutoScaleMode = AutoScaleMode.None;
         Font = Ui.Body; BackColor = Ui.Bg; ForeColor = Ui.Fg;
         int S500 = Ui.S(520), pad = Ui.S(24), W = S500 - pad * 2, bw = Ui.S(150), fh = Ui.S(38), gap = Ui.S(8);
-        ClientSize = new Size(S500, Ui.S(492));
+        ClientSize = new Size(S500, Ui.S(532));
 
         int y = Ui.S(70);
         AddLabel("Tastenkombination", null, pad, y); y += Ui.S(24);
@@ -885,7 +889,10 @@ class EditDialog : Form
         var pickHide = new FlatButton("Offene Apps", ButtonKind.Secondary, Ui.GlyphApps);
         pickHide.SetBounds(pad + W - bw, y, bw, fh); Controls.Add(pickHide);
         pickHide.Click += (s, e) => ShowPicker(pickHide, w => hide.Text = w.ExeName);
-        y += fh + Ui.S(10);
+        y += fh + Ui.S(12);
+
+        closeCurrent.Location = new Point(pad, y); Controls.Add(closeCurrent);
+        y += closeCurrent.Height + Ui.S(6);
 
         error.SetBounds(pad, y, W, Ui.S(22)); error.ForeColor = Ui.Danger; error.Font = Ui.Small; error.BackColor = Ui.Bg;
         Controls.Add(error);
@@ -905,6 +912,7 @@ class EditDialog : Form
             app.Text = existing.ExeName;
             launch.Text = existing.LaunchPath ?? "";
             hide.Text = existing.HideExe ?? "";
+            closeCurrent.Checked = existing.CloseCurrent;
         }
         Shown += (s, e) => hotkey.Focus();
     }
@@ -980,7 +988,7 @@ class EditDialog : Form
         }
         Result = new Binding
         {
-            Mods = hotkey.Mods, Vk = hotkey.Vk, ExeName = exe, HideExe = hideExe,
+            Mods = hotkey.Mods, Vk = hotkey.Vk, ExeName = exe, HideExe = hideExe, CloseCurrent = closeCurrent.Checked,
             LaunchPath = launch.Text.Trim().Length > 0 ? launch.Text.Trim() : null
         };
         DialogResult = DialogResult.OK;
@@ -1223,9 +1231,26 @@ class MainForm : Form
             return;
         }
 
+        IntPtr prev = Native.GetForegroundWindow();
         if (b.HideExe != null) HiddenWindows.Hide(b.HideExe);
-        if (wnd == IntPtr.Zero) { if (b.LaunchPath != null) WinApi.Launch(b.LaunchPath); return; }
-        WinApi.ForceForeground(wnd);
+        if (wnd == IntPtr.Zero)
+        {
+            if (b.LaunchPath == null) return;
+            WinApi.Launch(b.LaunchPath);
+        }
+        else WinApi.ForceForeground(wnd);
+        if (b.CloseCurrent) ClosePrevious(prev, wnd);
+    }
+
+    // Normal close (like the X button) -> the app can still ask to save. Never desktop/taskbar, target or ourselves.
+    static void ClosePrevious(IntPtr prev, IntPtr target)
+    {
+        if (prev == IntPtr.Zero || prev == target || !WinApi.IsAppWindow(prev)) return;
+        uint pid, targetPid = 0;
+        Native.GetWindowThreadProcessId(prev, out pid);
+        if (target != IntPtr.Zero) Native.GetWindowThreadProcessId(target, out targetPid);
+        if (pid == (uint)Process.GetCurrentProcess().Id || pid == targetPid) return;
+        Native.PostMessage(prev, Native.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
     }
 
     void RegisterAll()
@@ -1338,7 +1363,7 @@ class MainForm : Form
         SaveConfig(); RegisterAll();
     }
 
-    // line format: Hotkey = App.exe | launch path | hide.exe   (last two optional)
+    // line format: Hotkey = App.exe | launch path | hide.exe | close   (last three optional)
     void LoadConfig()
     {
         toggle.Checked = true;
@@ -1355,7 +1380,7 @@ class MainForm : Form
 
             var b = new Binding();
             if (!Hotkeys.Parse(left, out b.Mods, out b.Vk)) continue;
-            var parts = right.Split(new[] { '|' }, 3);
+            var parts = right.Split(new[] { '|' }, 4);
             b.ExeName = parts[0].Trim();
             if (!b.ExeName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) b.ExeName += ".exe";
             if (parts.Length > 1 && parts[1].Trim().Length > 0) b.LaunchPath = Environment.ExpandEnvironmentVariables(parts[1].Trim());
@@ -1364,6 +1389,7 @@ class MainForm : Form
                 b.HideExe = parts[2].Trim();
                 if (!b.HideExe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) b.HideExe += ".exe";
             }
+            if (parts.Length > 3) b.CloseCurrent = parts[3].Trim().Equals("close", StringComparison.OrdinalIgnoreCase);
             bindings.Add(b);
         }
     }
@@ -1372,13 +1398,14 @@ class MainForm : Form
     {
         var sb = new StringBuilder();
         sb.AppendLine("# AppSwitch config - wird von der App verwaltet");
-        sb.AppendLine("# Hotkey = App.exe | Startpfad | Versteckte.exe");
+        sb.AppendLine("# Hotkey = App.exe | Startpfad | Versteckte.exe | close");
         sb.AppendLine("toggle = " + (toggle.Checked ? "true" : "false"));
         foreach (var b in bindings)
         {
             string line = b.HotkeyText + " = " + b.ExeName;
-            if (b.LaunchPath != null || b.HideExe != null) line += " | " + (b.LaunchPath ?? "");
-            if (b.HideExe != null) line += " | " + b.HideExe;
+            if (b.LaunchPath != null || b.HideExe != null || b.CloseCurrent) line += " | " + (b.LaunchPath ?? "");
+            if (b.HideExe != null || b.CloseCurrent) line += " | " + (b.HideExe ?? "");
+            if (b.CloseCurrent) line += " | close";
             sb.AppendLine(line);
         }
         File.WriteAllText(configPath, sb.ToString());
